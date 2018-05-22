@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import requests
+import urllib3
 from time import time, sleep
 from json import dumps
 from ConfigParser import RawConfigParser
@@ -15,12 +16,12 @@ class ZenAPIConfig():
     '''
     def __init__(self):
         self.config = RawConfigParser()
-        self.config.read('/root/zenoss_api/creds.cfg')
+        self.config.read('creds.cfg')
         self.url = self.config.get('zenoss_api', 'url')
         self.username = self.config.get('zenoss_api', 'username')
         self.password = self.config.get('zenoss_api', 'password')
         self.ssl_verify = self.config.get('zenoss_api', 'ssl_verify')
-        self.router_endpoints = RouterEndpointMap()
+        self.router_endpoints = self.getRouterEndpointInfo()
 
     def getUrl(self):
         return self.url
@@ -38,6 +39,8 @@ class ZenAPIConfig():
             if self.ssl_verify.lower() == 'true':
                 return True
             elif self.ssl_verify.lower() == 'false':
+                # No one wants to see SSL warnings if verify is off.
+                urllib3.disable_warnings()
                 return False
             else:
                 # default to True if they set anything other than "true" or "false"
@@ -47,7 +50,44 @@ class ZenAPIConfig():
             raise
 
     def getRouterEndpoint(self, router_name):
-        return self.router_endpoints.getEndpoint(router_name)
+        return self.getEndpoint(router_name)
+
+    def getEndpoint(self, router):
+        if router in self.router_endpoints.keys():
+            return self.router_endpoints.get(router)
+        else:
+            raise Exception('Router not found')
+      
+    def getRouterEndpointInfo(self):
+        """
+        Makes a call to the Zenoss Introspection Router to get all router
+        names and URLs.
+        """
+        introspection_router = '/zport/dmd/introspection_router'
+        api_endpoint = self.getUrl() + introspection_router
+        payload = dumps({'action': 'IntrospectionRouter',
+          'method': 'getAllRouters',
+          'data': [],
+          'tid': 1,
+        })
+        
+        response = requests.post(api_endpoint,
+            payload,
+            headers={'Content-Type': 'application/json'},
+            auth=(self.getUsername(), self.getPassword()),
+            verify=self.getSSLVerify(),
+        )
+        
+        if response.status_code != 200:
+            print 'HTTP Status: %s' % (response.status_code)
+            return
+        content = response.json()
+        routerData = content.get('result', {}).get('data', [])
+        routerMap = {}
+        for router in routerData:
+            routerMap[router['action']] = router['urlpath']
+
+        return routerMap
 
 
 class ZenAPIConnector():
